@@ -1,0 +1,319 @@
+---
+title: "AAAAI 2026 Abstract"
+author: "Neel Singh"
+date: "2025-08-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(readxl)
+library(writexl)
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(dplyr)
+library(readr)
+library(stringr)
+```
+
+# Census Import
+```{r}
+poverty <- read_excel("poverty.xlsx")
+```
+
+
+# PLACES Import
+```{r}
+PLACES <- read_excel("/Users/nisingh/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Census/XSLX/PLACES 2020.xlsx") %>% rename("Asthma_2018" = "Data_Value", "GEOID" = "geoid10")
+
+PLACES <- PLACES %>%
+  mutate(
+    state_fips  = substr(GEOID, 1, 2),
+    county_fips = substr(GEOID, 3, 5)
+  )
+
+CBSA1 <- read_excel("~/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/CBSA.xlsx")
+
+PLACES <- PLACES %>%
+  left_join(
+    CBSA1 %>%
+      mutate(
+        FIPS.State.Code = sprintf("%02s", `FIPS State Code`),
+        FIPS.County.Code = sprintf("%03s", `FIPS County Code`)
+      ) %>%
+      select(FIPS.State.Code, FIPS.County.Code, `CBSA Code`),
+    by = c("state_fips" = "FIPS.State.Code", "county_fips" = "FIPS.County.Code")
+  )
+
+PLACES <- PLACES %>%
+  group_by(`CBSA Code`) %>%
+  mutate(
+    cbsa_asthma_mean = mean(Asthma_2018, na.rm = TRUE),
+    cbsa_asthma_sd   = sd(Asthma_2018, na.rm = TRUE),
+    
+    # 1. Asthma relative to CBSA mean
+    asthma_cbsa_ratio = Asthma_2018 / cbsa_asthma_mean,
+    
+    # 2. Asthma z-score within CBSA
+    asthma_cbsa_zscore = (Asthma_2018 - cbsa_asthma_mean) / cbsa_asthma_sd
+  ) %>%
+  ungroup() 
+
+PLACES <- PLACES %>% select(GEOID, asthma_cbsa_zscore, state_fips, county_fips) %>% rename("Asthma_2018" = "asthma_cbsa_zscore")
+```
+
+## Community Choice Demonstration
+
+# Tract to CBSA Link 
+```{r}
+CBSA <- read_excel("~/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/CBSA.xlsx")
+
+CCD <- PLACES %>%
+  left_join(
+    CBSA %>%
+      mutate(
+        FIPS.State.Code = sprintf("%02s", `FIPS State Code`),
+        FIPS.County.Code = sprintf("%03s", `FIPS County Code`)
+      ) %>%
+      select(FIPS.State.Code, FIPS.County.Code, `CBSA Code`),
+    by = c("state_fips" = "FIPS.State.Code", "county_fips" = "FIPS.County.Code")
+  )
+```
+
+# Poverty
+```{r}
+poverty_ccd_wide <- poverty %>%
+  select(GEOID, NAME, variable, estimate) %>%
+  pivot_wider(names_from = variable, values_from = estimate) %>%
+  rename(
+    total_population = B17010_001,
+    below_poverty = B17010_002,
+    total_family_households = B11001_002
+  ) %>% select(GEOID, total_family_households, total_population, below_poverty) %>% 
+  transmute(GEOID, total_family_households, fam_pov_rate = below_poverty / total_population)
+
+CCD <- CCD %>% left_join(
+  poverty_ccd_wide, by = "GEOID"
+  )
+```
+
+# Picture of Subsidized Households
+```{r}
+sub_households1 <- read_excel("~/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/Picture of Subsizided Households/TRACT_AK_MN_2018.xlsx")
+
+sub_households2 <- read_excel("/Users/nisingh/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/Picture of Subsizided Households/TRACT_MO_WY_2018.xlsx")
+
+sub_households <- bind_rows(sub_households1, sub_households2)
+
+sub_households <- sub_households %>% select(program, code, 
+                                            number_reported,
+                                            pct_2adults, 
+                                            pct_1adult) %>% 
+  rename("GEOID" = "code")
+
+sub_households <- sub_households %>%
+  mutate(across(
+    .cols = -GEOID,
+    .fns = ~ ifelse(. %in% c("NA", -1, -4, -5), 0, .)
+  )) %>% filter(program == 1) %>% select(-c("program"))
+
+CCD <- CCD %>% left_join(
+  sub_households, by = "GEOID"
+  )
+```
+
+# 2019 School Proficiency Index
+```{r}
+SPI <- read_csv('/Users/nisingh/Documents/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/school_proficiency_index_AAAAI.csv') %>% 
+  mutate(geoid10 = paste0(STATE, COUNTY, TRACT)) %>% 
+  group_by(geoid10) %>% 
+   summarise(avg_SCHL_IDX = mean(SCHL_IDX, na.rm = T)
+  ) %>% 
+  rename(GEOID = geoid10, SCHL_IDX = avg_SCHL_IDX
+         )
+
+CCD <- CCD %>% left_join(
+  SPI, by = "GEOID"
+  )
+```
+
+# COI
+```{r}
+coi <- read_csv('/Users/nisingh/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/COI2.csv')
+
+coi <- coi %>% filter(year == 2015) %>% rename("GEOID" = "geoid") %>% select(GEOID, r_COI_met)
+
+CCD <- CCD %>% left_join(
+  coi, by = "GEOID"
+  )
+```
+
+# Community Choice Together
+```{r}
+library(dplyr)
+
+CCD1 <- CCD %>% filter(is.na(r_COI_met) == FALSE, total_family_households > 0)
+
+OA_ccd <- read_csv("~/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/OA.csv") %>%
+  mutate(
+    GEOID = str_pad(state, 2, pad = "0") %>%
+            str_c(str_pad(county, 3, pad = "0")) %>%
+            str_c(str_pad(tract, 6, pad = "0"))
+  ) %>% select(GEOID, kfr_pooled_pooled_p25)
+
+CCD1 <- CCD1 %>% left_join(OA_ccd, by = "GEOID")
+
+# Poverty
+CCD1 <- CCD1 %>%
+  group_by(`CBSA Code`) %>%
+  mutate(
+    cbsa_pov = mean(fam_pov_rate, na.rm = TRUE),
+    pov_thresh = ifelse(cbsa_pov < 0.10, cbsa_pov, pmax(0.10, 0.75 * cbsa_pov)),
+    pov_ok = fam_pov_rate <= pov_thresh
+  ) %>% ungroup()
+
+# Assisted Rate
+CCD1 <- CCD1 %>%
+  mutate(
+    pct_family_wkids = pct_2adults + pct_1adult,
+    est_assisted_fam_kids = number_reported * pct_family_wkids / 100,
+    assisted_rate = est_assisted_fam_kids / total_family_households
+  ) %>%
+  group_by(`CBSA Code`) %>%
+  mutate(
+    cbsa_assisted = mean(assisted_rate, na.rm = TRUE),
+    assisted_thresh = 0.75 * cbsa_assisted,
+    assisted_ok = assisted_rate <= assisted_thresh
+  ) %>% ungroup()
+
+# Minimum school performance
+CCD1 <- CCD1 %>%
+  group_by(`CBSA Code`) %>%
+  mutate(
+    schl_25pctl = quantile(SCHL_IDX, probs = 0.25, na.rm = TRUE),
+    school_ok = SCHL_IDX >= schl_25pctl
+  ) %>% ungroup()
+
+# Opportunity Threshold
+CCD1 <- CCD1 %>%
+  group_by(`CBSA Code`) %>%
+  mutate(
+    schl_p75 = quantile(SCHL_IDX, 0.75, na.rm = T),
+    high_school_proficiency = SCHL_IDX >= schl_p75,
+    OA = quantile(kfr_pooled_pooled_p25, 0.75, na.rm = T), 
+    OA_check = kfr_pooled_pooled_p25 >= OA
+  ) %>% ungroup()
+
+CCD1 <- CCD1 %>% mutate(
+  COI_check = r_COI_met >= 50
+)
+
+
+# Final Check
+CCD1 <- CCD1 %>%
+  mutate(
+    is_opportunity_tract = pov_ok & assisted_ok & school_ok & (COI_check | high_school_proficiency | OA_check)
+  )
+
+model_CCD <- lm(Asthma_2018 ~ is_opportunity_tract , data = CCD1)
+summary(model_CCD)
+```
+
+# MTO Calculation
+```{r}
+# Step 1: Reshape to wide format
+poverty_wide <- poverty %>%
+  select(GEOID, NAME, variable, estimate) %>%
+  pivot_wider(names_from = variable, values_from = estimate) %>%
+  rename(
+    total_population = B17021_001,
+    below_poverty = B17021_002,
+    total_family_households = B11001_002
+  )
+
+# Step 2: Calculate poverty rate
+poverty_wide <- poverty_wide %>%
+  mutate(
+    poverty_rate = below_poverty / total_population * 100,
+    #poverty_rate = round(poverty_rate, 1),  # optional: round to 1 decimal
+    low_poverty = if_else(poverty_rate < 10, 1, 0)
+  ) %>% left_join(coi, by = "GEOID")
+
+# Merge datasets
+merged_data <- dplyr::inner_join(poverty_wide, PLACES, by = "GEOID")
+
+merged_data <- merged_data %>% filter(is.na(r_COI_met) == FALSE, total_family_households > 0)
+
+# Linreg 10% dichotomized
+model <- lm(Asthma_2018 ~ low_poverty, data = merged_data)
+
+# View results
+summary(model)
+
+
+```
+
+## CMTO Analysis
+```{r}
+OA <- read_csv("~/Library/CloudStorage/OneDrive-UniversityofNorthCarolinaatChapelHill/Neighborhood Lung Health Epidemiological Analysis/Neighborhood data/Abstract Only/OA.csv") 
+
+
+
+OA <- OA %>%
+  mutate(
+    GEOID = str_pad(state, 2, pad = "0") %>%
+            str_c(str_pad(county, 3, pad = "0")) %>%
+            str_c(str_pad(tract, 6, pad = "0"))
+  )
+
+OA <- OA %>% left_join(PLACES, by = "GEOID")
+
+OA <- OA %>%
+  left_join(
+    CBSA %>%
+      mutate(
+        FIPS.State.Code = sprintf("%02s", `FIPS State Code`),
+        FIPS.County.Code = sprintf("%03s", `FIPS County Code`)
+      ) %>%
+      select(FIPS.State.Code, FIPS.County.Code, `CBSA Code`),
+    by = c("state_fips" = "FIPS.State.Code", "county_fips" = "FIPS.County.Code")
+  )
+
+OA <- OA %>% left_join(coi, by = "GEOID")
+
+OA <- OA %>% filter(is.na(r_COI_met) == FALSE)
+
+OA <- OA %>%
+  group_by(`county_fips`) %>%
+  mutate(
+    top20_kfr = if_else(
+      kfr_pooled_pooled_p25 >= quantile(kfr_pooled_pooled_p25, 0.60, na.rm = TRUE),
+      1, 0
+    )
+  ) %>%
+  ungroup()
+
+model <- lm(Asthma_2018 ~ top20_kfr, data = OA)
+
+# View results
+summary(model)
+
+```
+
+## COI Only
+```{r}
+COI_only <- coi %>% filter(is.na(r_COI_met) == FALSE)
+
+COI_only <- COI_only %>% left_join(PLACES, by = "GEOID")
+
+COI_only <- COI_only %>% mutate(COI_threshold = r_COI_met > 60)
+
+summary(lm(Asthma_2018 ~ COI_threshold , data = COI_only))
+```
+

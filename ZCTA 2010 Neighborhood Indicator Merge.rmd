@@ -1,0 +1,923 @@
+---
+title: "ZCTA 2010 Neighborhood Indicator Merge"
+author: "Neel Singh"
+date: "2025-06-21"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(sf)
+```
+
+Gazetteer
+```{r}
+# Import
+GazetteerZCTA2010 <- read_excel("Neighborhood Data/ZCTA 2010/GazetteerZCTA2010.xlsx") %>% 
+  rename(ZCTA2KX = GEOID) %>% 
+  filter(POP10 > 0) 
+
+# Remove PR ZCTAs
+exclude_codes <- c(
+  "00601","00602","00603","00606","00610","00612","00616","00617","00622","00623",
+  "00624","00627","00631","00637","00638","00641","00646","00647","00650","00652",
+  "00653","00656","00659","00660","00662","00664","00667","00669","00670","00674",
+  "00676","00677","00678","00680","00682","00683","00685","00687","00688","00690",
+  "00692","00693","00694","00698","00703","00704","00705","00707","00714","00715",
+  "00716","00717","00718","00719","00720","00723","00725","00727","00728","00729",
+  "00730","00731","00735","00736","00738","00739","00740","00741","00745","00751",
+  "00754","00757","00765","00766","00767","00769","00771","00772","00773","00775",
+  "00777","00778","00780","00782","00783","00784","00786","00791","00794","00795",
+  "00901","00906","00907","00909","00911","00912","00913","00915","00917","00918",
+  "00920","00921","00923","00924","00925","00926","00927","00934","00936","00949",
+  "00950","00951","00952","00953","00956","00957","00959","00960","00961","00962",
+  "00965","00966","00968","00969","00971","00976","00979","00982","00983","00985",
+  "00987"
+)
+
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  filter(!ZCTA2KX %in% exclude_codes) %>% 
+  select(ZCTA2KX, ALAND_SQMI)
+```
+
+Crosswalks
+```{r}
+# ZCTA to Tract Crosswalk
+ZCTAtoTract2010 <- read_excel("Neighborhood Data/ZCTA 2010/ZCTAtoTract2010.xlsx") %>% 
+  rename("ZCTA2KX" = "ZCTA5", 
+         "geoid10" = "GEOID")
+
+# Add leading 0 to 10 digit geoid10 codes
+ZCTAtoTract2010$geoid10 <- sprintf("%011.0f", ZCTAtoTract2010$geoid10)
+
+# ZCTA to County Crosswalk
+ZCTAtoCounty2010 <- read_excel("Neighborhood Data/ZCTA 2010/ZCTAtoCounty2010.xlsx") %>% 
+  rename("ZCTA2KX" = "ZCTA5")
+
+# Add leading 0 to 4 digit state/county codes
+ZCTAtoCounty2010$county <- sprintf("%05.0f", ZCTAtoCounty2010$GEOID) 
+```
+
+Import Census 2010 Data
+```{r}
+NeighborhoodDataCensus2010 <- readRDS("NeighborhoodDataCensus2010.rds")
+```
+
+Commuting Zones
+```{r}
+# Import
+CommutingZonesZCTA2010 <- read_excel("Neighborhood Data/Census 2010/CommutingZonesCounties2010.xlsx")
+
+# Add leading 0 to 4 digit FIPS codes
+CommutingZonesZCTA2010$county <- sprintf("%05d", CommutingZonesZCTA2010$FIPS)
+
+CommutingZonesZCTA2010 <- ZCTAtoCounty2010 %>%
+  left_join(CommutingZonesZCTA2010, by = "county")
+
+# Step 3. Aggregate ZCTA population shares by commuting zone
+CommutingZonesZCTA2010 <- CommutingZonesZCTA2010 %>%
+  group_by(ZCTA2KX, OUT10) %>%
+  summarise(cz_share = sum(ZPOPPCT, na.rm = TRUE), 
+            .groups = "drop")
+
+# Step 4. For each ZCTA, choose the commuting zone with the largest share
+CommutingZonesZCTA2010 <- CommutingZonesZCTA2010 %>%
+  group_by(ZCTA2KX) %>%
+  slice_max(order_by = cz_share, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Final result: each ZCTA assigned to one OUT10 code
+CommutingZonesZCTA2010 <- CommutingZonesZCTA2010 %>%
+  select(ZCTA2KX, OUT10) %>% 
+  rename(commuting_area = OUT10)
+
+# View result
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(CommutingZonesZCTA2010, by = "ZCTA2KX")
+```
+
+COI 3.0
+```{r}
+# Import
+COI_3.0ZCTA2010 <- NeighborhoodDataCensus2010
+
+# Transform and Select Relevant Variables
+COI_3.0ZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(COI_3.0ZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(z_COI_nat = ifelse(
+              all(is.na(z_COI_nat)),
+              NA_real_,
+              sum((ZPOPPCT / 100) * z_COI_nat, na.rm = TRUE)
+              ),
+            zip_z_ed_nat = ifelse(
+              all(is.na(zip_z_ed_nat)),
+              NA_real_,
+              sum((ZPOPPCT / 100) * zip_z_ed_nat, na.rm = TRUE)
+              ),
+            zip_z_he_nat = ifelse(
+              all(is.na(zip_z_he_nat)),
+              NA_real_,
+              sum((ZPOPPCT / 100) * zip_z_he_nat, na.rm = TRUE)
+              ),
+            zip_z_se_nat = ifelse(
+              all(is.na(zip_z_se_nat)),
+              NA_real_,
+              sum((ZPOPPCT / 100) * zip_z_se_nat, na.rm = TRUE)
+              ),
+            .groups = "drop"
+            ) %>% 
+  select(ZCTA2KX,
+         z_COI_nat,
+         zip_z_ed_nat,
+         zip_z_he_nat,
+         zip_z_se_nat)
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(COI_3.0ZCTA2010,
+            by = "ZCTA2KX"
+  )
+```
+
+RUCA
+```{r}
+# Import
+RUCAZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(NeighborhoodDataCensus2010, by = "geoid10")
+
+# Step 2. Aggregate ZCTA population shares by RUCA
+RUCAZCTA2010 <- RUCAZCTA2010 %>%
+  group_by(ZCTA2KX, primary_ruca) %>%
+  summarise(ruca_share = sum(ZPOPPCT/100, na.rm = TRUE), 
+            .groups = "drop")
+
+# Step 3. For each ZCTA, choose the RUCA with the largest share
+RUCAZCTA2010 <- RUCAZCTA2010 %>%
+  group_by(ZCTA2KX) %>%
+  slice_max(order_by = ruca_share, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Final result: each ZCTA assigned to one primary_ruca code
+RUCAZCTA2010 <- RUCAZCTA2010 %>%
+  select(ZCTA2KX, primary_ruca)
+
+# View result
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(RUCAZCTA2010, by = "ZCTA2KX")
+```
+
+
+COI 3.0 Subdomains
+```{r}
+# Import
+COI_3.0SubdomainsZCTA2010 <- NeighborhoodDataCensus2010
+
+# Transform and Select Relevant Variables
+COI_3.0SubdomainsZCTA2010 <- ZCTAtoTract2010 %>%
+  left_join(COI_3.0SubdomainsZCTA2010, by = "geoid10") %>%
+  group_by(ZCTA2KX) %>%
+  summarise(
+    z_ED_EL_nat = ifelse(
+      all(is.na(z_ED_EL_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_ED_EL_nat, na.rm = TRUE)
+    ),
+    z_ED_ER_nat = ifelse(
+      all(is.na(z_ED_ER_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_ED_ER_nat, na.rm = TRUE)
+    ),
+    z_ED_SP_nat = ifelse(
+      all(is.na(z_ED_SP_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_ED_SP_nat, na.rm = TRUE)
+    ),
+    z_HE_EP_nat = ifelse(
+      all(is.na(z_HE_EP_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_HE_EP_nat, na.rm = TRUE)
+    ),
+    z_HE_HR_nat = ifelse(
+      all(is.na(z_HE_HR_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_HE_HR_nat, na.rm = TRUE)
+    ),
+    z_HE_SE_nat = ifelse(
+      all(is.na(z_HE_SE_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_HE_SE_nat, na.rm = TRUE)
+    ),
+    z_HE_HE_nat = ifelse(
+      all(is.na(z_HE_HE_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_HE_HE_nat, na.rm = TRUE)
+    ),
+    z_SE_EI_nat = ifelse(
+      all(is.na(z_SE_EI_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_EI_nat, na.rm = TRUE)
+    ),
+    z_SE_EO_nat = ifelse(
+      all(is.na(z_SE_EO_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_EO_nat, na.rm = TRUE)
+    ),
+    z_SE_ER_nat = ifelse(
+      all(is.na(z_SE_ER_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_ER_nat, na.rm = TRUE)
+    ),
+    z_SE_HQ_nat = ifelse(
+      all(is.na(z_SE_HQ_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_HQ_nat, na.rm = TRUE)
+    ),
+    z_SE_SR_nat = ifelse(
+      all(is.na(z_SE_SR_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_SR_nat, na.rm = TRUE)
+    ),
+    z_SE_WL_nat = ifelse(
+      all(is.na(z_SE_WL_nat)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * z_SE_WL_nat, na.rm = TRUE)
+    ),
+    .groups = "drop"
+    ) %>% 
+  select(ZCTA2KX,
+         z_ED_EL_nat,
+         z_ED_ER_nat,
+         z_ED_SP_nat,
+         z_HE_EP_nat,
+         z_HE_HR_nat,
+         z_HE_SE_nat,
+         z_HE_HE_nat,
+         z_SE_EI_nat,
+         z_SE_EO_nat,
+         z_SE_ER_nat,
+         z_SE_HQ_nat,
+         z_SE_SR_nat,
+         z_SE_WL_nat
+         )
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(COI_3.0SubdomainsZCTA2010,
+            by = "ZCTA2KX"
+  )
+```
+
+School Proficiency
+```{r}
+# AFFHT0001; 2012 data
+
+# Import
+SchoolProficiencyZCTA2010 <- NeighborhoodDataCensus2010
+
+# Crosswalk
+SchoolProficiencyZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(SchoolProficiencyZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(
+    SCHL_IDX = ifelse(
+      all(is.na(SCHL_IDX)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * SCHL_IDX, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(SchoolProficiencyZCTA2010,
+            by = "ZCTA2KX"
+  )
+```
+
+R/ECAP
+```{r}
+# Import
+RECAPZCTA2010 <- NeighborhoodDataCensus2010
+
+# Crosswalk 
+RECAPZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(RECAPZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(
+    RECAPsum = ifelse(
+    all(is.na(RCAP_20)),
+    NA_real_,
+    sum(RCAP_20, na.rm = TRUE)
+    ),
+    .groups = "drop"
+    ) %>% 
+  mutate(RCAP_20 = ifelse(RECAPsum > 0, 1, 0)) %>% 
+  select(ZCTA2KX, RCAP_20)
+
+# Join to GazetteerZCTA2010
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(RECAPZCTA2010,
+            by = c("ZCTA2KX")
+            )
+```
+
+American Community Survey
+```{r}
+# Import
+ACS2013ZCTA2010 <- read_excel("Neighborhood Data/ZCTA 2010/ACS2013ZCTA2010.xlsx") %>% 
+  rename(ZCTA2KX = GEOID)
+
+# Calculate needed variables
+ACS2013ZCTA2010 <- ACS2013ZCTA2010 %>%
+  mutate(
+    # B17021EST2_PCT	Families with Income in the past 12 months below poverty level Poverty Rate
+    B17021EST2_PCT = B17021_002E / B17021_001E,
+    
+    # B17021_FAM_PCT	Poverty Rate In Family Households as a % 
+    B17021_FAM_PCT = B17010_002E / B17010_001E,
+    
+    # B19013est1	Median Household Income In The Past 12 Months
+    B19013est1 = B19013_001E,
+    
+    # B25014_CROWD_PCT	% Households with 1 or more occupants per room
+    total_crowded = B25014_005E + B25014_006E + B25014_007E +
+                    B25014_011E + B25014_012E + B25014_013E,
+    
+    B25014_CROWD_PCT = 100 * total_crowded / B25014_001E,
+
+    # B25014_SEVCROWD_O_PCT	Owner occupied: 1.51 or more occupants per room as a % 
+    owner_151_plus = B25014_006E + B25014_007E,
+    B25014_SEVCROWD_O_PCT = 100 * owner_151_plus / B25014_002E,
+
+    # B25014_SEVCROWD_R_PCT	Renter occupied: 1.51 or more occupants per room as a %
+    renter_151_plus = B25014_012E + B25014_013E,
+    B25014_SEVCROWD_R_PCT = 100 * renter_151_plus / B25014_008E,
+    
+     # B23001_UE_PCT	Overall Unemployment Rate
+    total_labor_force = rowSums(select(., 
+      B23001_006E, B23001_013E, B23001_020E, B23001_027E, B23001_034E, B23001_041E,
+      B23001_048E, B23001_055E, B23001_062E, B23001_069E, B23001_074E, B23001_079E, B23001_084E,
+      B23001_092E, B23001_099E, B23001_106E, B23001_113E, B23001_120E, B23001_127E,
+      B23001_134E, B23001_141E, B23001_148E, B23001_155E, B23001_160E, B23001_165E, B23001_170E
+    ), na.rm = TRUE),
+
+    total_unemployed = rowSums(select(., 
+      B23001_008E, B23001_015E, B23001_022E, B23001_029E, B23001_036E, B23001_043E,
+      B23001_050E, B23001_057E, B23001_064E, B23001_071E, B23001_076E, B23001_081E, B23001_086E,
+      B23001_094E, B23001_101E, B23001_108E, B23001_115E, B23001_122E, B23001_129E,
+      B23001_136E, B23001_143E, B23001_150E, B23001_157E, B23001_162E, B23001_167E, B23001_172E
+    ), na.rm = TRUE),
+
+    B23001_UE_PCT = 100 * total_unemployed / total_labor_force,
+
+    # B23001_UE_16to24_PCT	16-24  Unemployment Rate
+    lf_16_24 = rowSums(select(., 
+      B23001_006E, B23001_013E, B23001_020E,
+      B23001_092E, B23001_099E, B23001_106E
+    ), na.rm = TRUE),
+
+    unemp_16_24 = rowSums(select(., 
+      B23001_008E, B23001_015E, B23001_022E,
+      B23001_094E, B23001_101E, B23001_108E
+    ), na.rm = TRUE),
+
+    B23001_UE_16to24_PCT = 100 * unemp_16_24 / lf_16_24,
+
+    # B23001_UE_25to64_PCT	25 - 65 Unemployment Rate
+    lf_25_64 = rowSums(select(., 
+      B23001_027E, B23001_034E, B23001_041E, B23001_048E,
+      B23001_055E, B23001_062E, B23001_069E,
+      B23001_113E, B23001_120E, B23001_127E, B23001_134E,
+      B23001_141E, B23001_148E, B23001_155E
+    ), na.rm = TRUE),
+
+    unemp_25_64 = rowSums(select(., 
+      B23001_029E, B23001_036E, B23001_043E, B23001_050E,
+      B23001_057E, B23001_064E, B23001_071E,
+      B23001_115E, B23001_122E, B23001_129E, B23001_136E,
+      B23001_143E, B23001_150E, B23001_157E
+    ), na.rm = TRUE),
+
+    B23001_UE_25to64_PCT = 100 * unemp_25_64 / lf_25_64,
+    
+    # B25106_CB_PCT	Paying > 30% as a %
+    paying_30_plus = rowSums(select(., 
+      B25106_006E, B25106_010E, B25106_014E, B25106_018E, B25106_022E,
+      B25106_028E, B25106_032E, B25106_036E, B25106_040E, B25106_044E
+    ), na.rm = TRUE),
+
+    B25106_CB_PCT = 100 * paying_30_plus / B25106_001E
+    
+  ) %>% 
+  select(ZCTA2KX, 
+         B17021EST2_PCT, 
+         B17021_FAM_PCT, 
+         B19013est1, 
+         B23001_UE_PCT, 
+         B23001_UE_16to24_PCT, 
+         B23001_UE_25to64_PCT, 
+         B25014_CROWD_PCT, 
+         B25014_SEVCROWD_O_PCT, 
+         B25014_SEVCROWD_R_PCT, 
+         B25106_CB_PCT
+         )
+
+ACS2013ZCTA2010 <- ACS2013ZCTA2010 %>%
+  mutate(across(everything(), ~ ifelse(is.nan(.), NA_real_, .)))
+
+# Join to GazetteerCensus2010
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(ACS2013ZCTA2010,
+            by = c("ZCTA2KX")
+            )
+```
+
+Opportunity Atlas Neighborhood Characteristics
+```{r}
+# Import
+OANeighborhoodZCTA2010 <- NeighborhoodDataCensus2010
+
+# Import Census Gazetteer
+GazetteerCensus2010 <- read_excel('Neighborhood Data/Census 2010/GazetteerCensus2010.xlsx')
+
+# Split geoid10 into state, county, and tract
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  rename(geoid10 = GEOID) %>% 
+  mutate(STATE2KX = substr(geoid10, 1, 2),
+         CNTY2KX = substr(geoid10, 3, 5),
+         TRACT2KX = substr(geoid10, 6, 11)
+         ) %>% 
+  filter(STATE2KX != "72") %>% # remove PR tracts
+  select(geoid10, ALAND_SQMI)
+
+# Crosswalk
+OANeighborhoodZCTA2010 <- GazetteerCensus2010 %>% 
+  left_join(OANeighborhoodZCTA2010, by = "geoid10") %>% 
+  mutate(job_density_2013 = job_density_2013 * ALAND_SQMI,
+         popdensity2010 = popdensity2010 * ALAND_SQMI)
+
+OANeighborhoodZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(OANeighborhoodZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(
+    ann_avg_job_growth_2004_2013 = ifelse(
+      all(is.na(ann_avg_job_growth_2004_2013)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * ann_avg_job_growth_2004_2013, na.rm = TRUE)
+    ),
+    foreign_share2010 = ifelse(
+      all(is.na(foreign_share2010)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * foreign_share2010, na.rm = TRUE)
+    ),
+    frac_coll_plus2010 = ifelse(
+      all(is.na(frac_coll_plus2010)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * frac_coll_plus2010, na.rm = TRUE)
+    ),
+    gsmn_math_g3_2013 = ifelse(
+      all(is.na(gsmn_math_g3_2013)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * gsmn_math_g3_2013, na.rm = TRUE)
+    ),
+    job_density_2013 = ifelse(
+      all(is.na(job_density_2013)),
+      NA_real_,
+      sum((TRPOPPCT / 100) * job_density_2013, na.rm = TRUE)
+    ),
+    ln_wage_growth_hs_grad = ifelse(
+      all(is.na(ln_wage_growth_hs_grad)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * ln_wage_growth_hs_grad, na.rm = TRUE)
+    ),
+    mean_commutetime2000 = ifelse(
+      all(is.na(mean_commutetime2000)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * mean_commutetime2000, na.rm = TRUE)
+    ),
+    popdensity2010 = ifelse(
+      all(is.na(popdensity2010)),
+      NA_real_,
+      sum((TRPOPPCT / 100) * popdensity2010, na.rm = TRUE)
+    ),
+    rent_twobed2015 = ifelse(
+      all(is.na(rent_twobed2015)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * rent_twobed2015, na.rm = TRUE)
+    ),
+    share_black2016 = ifelse(
+      all(is.na(share_black2016)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * share_black2016, na.rm = TRUE)
+    ),
+    `singleparent_share[2010]` = ifelse(
+      all(is.na(`singleparent_share[2010]`)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * `singleparent_share[2010]`, na.rm = TRUE)
+    ),
+    traveltime15_2010 = ifelse(
+      all(is.na(traveltime15_2010)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * traveltime15_2010, na.rm = TRUE)
+    ),
+    .groups = "drop"
+    ) %>% 
+  select(ZCTA2KX,
+         ann_avg_job_growth_2004_2013,
+         foreign_share2010,
+         frac_coll_plus2010,
+         gsmn_math_g3_2013,
+         job_density_2013,
+         ln_wage_growth_hs_grad,
+         mean_commutetime2000,
+         popdensity2010,
+         rent_twobed2015,
+         share_black2016,
+         `singleparent_share[2010]`,
+         traveltime15_2010
+  )
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(OANeighborhoodZCTA2010,
+            by = "ZCTA2KX"
+  ) %>% 
+  mutate(job_density_2013 = job_density_2013 / ALAND_SQMI,
+         popdensity2010 = popdensity2010 / ALAND_SQMI)
+```
+
+Opportunity Atlas Income and Incarceration
+```{r}
+# Import
+OAIncomeZCTA2010 <- NeighborhoodDataCensus2010
+
+# Crosswalk
+OAIncomeZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(OAIncomeZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(
+     kfr_pooled_pooled_p25 = ifelse(
+      all(is.na(kfr_pooled_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * kfr_pooled_pooled_p25, na.rm = TRUE)
+    ),
+     jail_pooled_pooled_p25 = ifelse(
+      all(is.na(jail_pooled_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * jail_pooled_pooled_p25, na.rm = TRUE)
+    ),
+     kfr_black_pooled_p25 = ifelse(
+      all(is.na(kfr_black_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * kfr_black_pooled_p25, na.rm = TRUE)
+    ),
+     kfr_hisp_pooled_p25 = ifelse(
+      all(is.na(kfr_hisp_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * kfr_hisp_pooled_p25, na.rm = TRUE)
+    ),
+     kfr_white_pooled_p25 = ifelse(
+      all(is.na(kfr_white_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * kfr_white_pooled_p25, na.rm = TRUE)
+    ),
+     jail_black_pooled_p25 = ifelse(
+      all(is.na(jail_black_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * jail_black_pooled_p25, na.rm = TRUE)
+    ),
+     jail_hisp_pooled_p25 = ifelse(
+      all(is.na(jail_hisp_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * jail_hisp_pooled_p25, na.rm = TRUE)
+    ),
+     jail_white_pooled_p25 = ifelse(
+      all(is.na(jail_white_pooled_p25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * jail_white_pooled_p25, na.rm = TRUE)
+    ),
+    .groups = "drop"
+    )%>% 
+  select(
+      ZCTA2KX,
+      kfr_pooled_pooled_p25,
+      kfr_white_pooled_p25,
+      kfr_black_pooled_p25,
+      kfr_hisp_pooled_p25,
+      jail_pooled_pooled_p25,
+      jail_black_pooled_p25,
+      jail_white_pooled_p25,
+      jail_hisp_pooled_p25
+      ) 
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(OAIncomeZCTA2010,
+            by = "ZCTA2KX"
+  )
+```
+
+BU RISE Gun Violence
+```{r}
+# Import
+BURISEZCTA2010 <- read_excel('Neighborhood Data/Census 2010/BURISEWGS84Coordinates.xlsx')
+
+# Convert BURISEZCTA2010 into sf object using X (lon) and Y (lat)
+points_sf <- st_as_sf(
+  BURISEZCTA2010,
+  coords = c("X", "Y"),
+  crs = 4326   # WGS84 (long/lat)
+)
+
+# Read all local tracts
+tract_files <- list.files("shapefiles/zctas_2010", pattern = "\\.gpkg$", full.names = TRUE)
+
+# Combine all state tract shapefiles
+all_tracts <- map_df(tract_files, st_read)
+
+# Spatial join: assign tract to each shooting point
+points_with_tract <- st_join(points_sf, all_tracts, join = st_within)
+
+# Summarize shootings by tract 
+points_with_tract <- points_with_tract %>% 
+  st_drop_geometry() %>% 
+  mutate(n_killed = ifelse(is.na(n_killed), 0, n_killed),
+         n_injured = ifelse(is.na(n_injured), 0, n_injured)
+         ) %>% 
+  group_by(GEOID10) %>% 
+  summarise(shootings = sum(n_killed + n_injured),
+            fatal_shootings = sum(n_killed)
+  ) %>% 
+  rename("ZCTA2KX" = "GEOID10")
+
+# Join to GazetteerZCTA2010
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(points_with_tract,
+            by = "ZCTA2KX"
+            ) %>% 
+  mutate(shootings = ifelse(is.na(shootings), 0, shootings),
+         fatal_shootings = ifelse(is.na(fatal_shootings), 0, fatal_shootings))
+```
+
+COI 2.0 Subdomains
+```{r}
+# Import
+COI_2.0SubdomainsZCTA2010 <- NeighborhoodDataCensus2010
+
+# Crosswalk
+COI_2.0SubdomainsZCTA2010 <- ZCTAtoTract2010 %>% 
+  left_join(COI_2.0SubdomainsZCTA2010, by = "geoid10") %>% 
+  group_by(ZCTA2KX) %>% 
+  summarise(
+    zip_zED_APENR = ifelse(
+      all(is.na(zip_zED_APENR)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_APENR, na.rm = TRUE)
+    ),
+    zip_zED_ATTAIN = ifelse(
+      all(is.na(zip_zED_ATTAIN)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_ATTAIN, na.rm = TRUE)
+    ),
+    zip_zED_COLLEGE = ifelse(
+      all(is.na(zip_zED_COLLEGE)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_COLLEGE, na.rm = TRUE)
+    ),
+    zip_zED_ECENROL = ifelse(
+      all(is.na(zip_zED_ECENROL)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_ECENROL, na.rm = TRUE)
+    ),
+    zip_zED_HSGRAD = ifelse(
+      all(is.na(zip_zED_HSGRAD)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_HSGRAD, na.rm = TRUE)
+    ),
+    zip_zED_MATH = ifelse(
+      all(is.na(zip_zED_MATH)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_MATH, na.rm = TRUE)
+    ),
+    zip_zED_READING = ifelse(
+      all(is.na(zip_zED_READING)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_READING, na.rm = TRUE)
+    ),
+    zip_zED_SCHPOV = ifelse(
+      all(is.na(zip_zED_SCHPOV)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_SCHPOV, na.rm = TRUE)
+    ),
+    zip_zED_TEACHXP = ifelse(
+      all(is.na(zip_zED_TEACHXP)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zED_TEACHXP, na.rm = TRUE)
+    ),
+    zip_zHE_FOOD = ifelse(
+      all(is.na(zip_zHE_FOOD)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_FOOD, na.rm = TRUE)
+    ),
+    zip_zHE_GREEN = ifelse(
+      all(is.na(zip_zHE_GREEN)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_GREEN, na.rm = TRUE)
+    ),
+    zip_zHE_HEAT = ifelse(
+      all(is.na(zip_zHE_HEAT)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_HEAT, na.rm = TRUE)
+    ),
+    zip_zHE_HLTHINS = ifelse(
+      all(is.na(zip_zHE_HLTHINS)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_HLTHINS, na.rm = TRUE)
+    ),
+    zHE_OZONE = ifelse(
+      all(is.na(zHE_OZONE)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zHE_OZONE, na.rm = TRUE)
+    ),
+    zHE_PM25 = ifelse(
+      all(is.na(zHE_PM25)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zHE_PM25, na.rm = TRUE)
+    ),
+    zip_zHE_VACANCY = ifelse(
+      all(is.na(zip_zHE_VACANCY)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_VACANCY, na.rm = TRUE)
+    ),
+    zip_zHE_WALK = ifelse(
+      all(is.na(zip_zHE_WALK)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_WALK, na.rm = TRUE)
+    ),
+    zip_zHE_SUPRFND = ifelse(
+      all(is.na(zip_zHE_SUPRFND)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_SUPRFND, na.rm = TRUE)
+    ),
+    zip_zHE_RSEI = ifelse(
+      all(is.na(zip_zHE_RSEI)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zHE_RSEI, na.rm = TRUE)
+    ),
+    zip_zSE_POVRATE = ifelse(
+      all(is.na(zip_zSE_POVRATE)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_POVRATE, na.rm = TRUE)
+    ),
+    zip_zSE_PUBLIC = ifelse(
+      all(is.na(zip_zSE_PUBLIC)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_PUBLIC, na.rm = TRUE)
+    ),
+    zip_zSE_HOME = ifelse(
+      all(is.na(zip_zSE_HOME)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_HOME, na.rm = TRUE)
+    ),
+    zip_zSE_OCC = ifelse(
+      all(is.na(zip_zSE_OCC)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_OCC, na.rm = TRUE)
+    ),
+    zip_zSE_MHE = ifelse(
+      all(is.na(zip_zSE_MHE)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_MHE, na.rm = TRUE)
+    ),
+    zip_zSE_EMPRAT = ifelse(
+      all(is.na(zip_zSE_EMPRAT)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_EMPRAT, na.rm = TRUE)
+    ),
+    zip_zSE_JOBPROX = ifelse(
+      all(is.na(zip_zSE_JOBPROX)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_JOBPROX, na.rm = TRUE)
+    ),
+    zip_zSE_SINGLE = ifelse(
+      all(is.na(zip_zSE_SINGLE)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_SINGLE, na.rm = TRUE)
+    ),
+    zip_zSE_ECRES = ifelse(
+      all(is.na(zip_zSE_ECRES)),
+      NA_real_,
+      sum((ZPOPPCT / 100) * zip_zSE_ECRES, na.rm = TRUE)
+    ),
+    .groups = "drop"
+    )%>% 
+  select(
+      ZCTA2KX,
+      zip_zED_APENR,
+      zip_zED_ATTAIN,
+      zip_zED_COLLEGE,
+      zip_zED_ECENROL,
+      zip_zED_HSGRAD,
+      zip_zED_MATH,
+      zip_zED_READING,
+      zip_zED_SCHPOV,
+      zip_zED_TEACHXP,
+      zip_zHE_FOOD,
+      zip_zHE_GREEN,
+      zip_zHE_HEAT,
+      zip_zHE_HLTHINS,
+      zHE_OZONE,
+      zHE_PM25,
+      zip_zHE_VACANCY,
+      zip_zHE_WALK,
+      zip_zHE_SUPRFND,
+      zip_zHE_RSEI,
+      zip_zSE_POVRATE,
+      zip_zSE_PUBLIC,
+      zip_zSE_HOME,
+      zip_zSE_OCC,
+      zip_zSE_MHE,
+      zip_zSE_EMPRAT,
+      zip_zSE_JOBPROX,
+      zip_zSE_SINGLE,
+      zip_zSE_ECRES
+    )
+
+# Join to Gazetteer
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(COI_2.0SubdomainsZCTA2010,
+            by = c("ZCTA2KX")
+            )
+```
+
+ACS Population
+```{r}
+total_child_vars <- c(
+  "B01001_003E", "B01001_004E", "B01001_005E", "B01001_006E",  # Male <18
+  "B01001_027E", "B01001_028E", "B01001_029E", "B01001_030E"   # Female <18
+)
+
+# Black only child variables
+black_child_vars <- c(
+  "B01001B_003E", "B01001B_004E", "B01001B_005E", "B01001B_006E",  # Male <18
+  "B01001B_018E", "B01001B_019E", "B01001B_020E", "B01001B_021E"   # Female <18
+)
+
+# Hispanic child variables
+hispanic_child_vars <- c(
+  "B01001I_003E", "B01001I_004E", "B01001I_005E", "B01001I_006E",
+  "B01001I_018E", "B01001I_019E", "B01001I_020E", "B01001I_021E"
+)
+
+# White only child variables
+white_child_vars <- c(
+  "B01001A_003E", "B01001A_004E", "B01001A_005E", "B01001A_006E",
+  "B01001A_018E", "B01001A_019E", "B01001A_020E", "B01001A_021E"
+)
+
+# Load Data
+ChildPopZCTA2010 <- read_excel("Neighborhood Data/ZCTA 2010/ACS2013ChildPopulationZCTA2010.xlsx")
+
+
+ChildPopZCTA2010 <- ChildPopZCTA2010 %>% 
+  transmute(GEOID,
+            zip_pop = rowSums(across(all_of(total_child_vars)), na.rm = TRUE),
+            zip_black = rowSums(across(all_of(black_child_vars)), na.rm = TRUE),
+            zip_hisp = rowSums(across(all_of(hispanic_child_vars)), na.rm = TRUE),
+            zip_white = rowSums(across(all_of(white_child_vars)), na.rm = TRUE)
+            ) %>% rename("ZCTA2KX" = "GEOID")
+
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% 
+  left_join(ChildPopZCTA2010,
+            by = "ZCTA2KX"
+  )
+```
+
+Quality Checks
+```{r}
+missing_report <- data.frame(
+  Variable = names(GazetteerZCTA2010),
+  Missing_Count = sapply(GazetteerZCTA2010, function(x) sum(is.na(x))),
+  Missing_Percent = sapply(GazetteerZCTA2010, function(x) mean(is.na(x)) * 100)
+)
+
+# Only keep variables with missing data
+missing_report <- missing_report[missing_report$Missing_Count > 0, ]
+print(missing_report)
+```
+
+Export Data
+```{r}
+# Remove population data
+GazetteerZCTA2010 <- GazetteerZCTA2010 %>% select(-ALAND_SQMI)
+
+saveRDS(GazetteerZCTA2010, "NeighborhoodDataZCTA2010.rds")
+```

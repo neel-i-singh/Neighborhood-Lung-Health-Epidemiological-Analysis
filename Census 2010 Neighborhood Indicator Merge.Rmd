@@ -1,0 +1,524 @@
+---
+title: "Census 2010 Neighborhood Indicator Merge"
+author: "Neel Singh"
+date: "2025-06-21"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(sf)
+```
+
+Gazetteer
+```{r}
+# Import
+GazetteerCensus2010 <- read_excel('Neighborhood Data/Census 2010/GazetteerCensus2010.xlsx') %>% filter(POP10 > 0)
+
+# Split geoid10 into state, county, and tract
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  rename(geoid10 = GEOID) %>% 
+  mutate(STATE2KX = substr(geoid10, 1, 2),
+         CNTY2KX = substr(geoid10, 3, 5),
+         TRACT2KX = substr(geoid10, 6, 11)
+         ) %>% 
+  filter(STATE2KX != "72") %>% # remove PR tracts
+  select(geoid10, STATE2KX, CNTY2KX, TRACT2KX)
+```
+
+Commuting Zones
+```{r}
+# Import
+CommutingZonesCensus2010 <- read_excel('Neighborhood Data/Census 2010/CommutingZonesCounties2010.xlsx')
+
+# Add leading 0 to 4 digit FIPS codes
+CommutingZonesCensus2010$FIPS_char <- sprintf("%05d", CommutingZonesCensus2010$FIPS)
+
+# Split into state and county
+CommutingZonesCensus2010$STATE2KX <- substr(CommutingZonesCensus2010$FIPS_char, 1, 2)
+CommutingZonesCensus2010$CNTY2KX <- substr(CommutingZonesCensus2010$FIPS_char, 3, 5)
+
+# Select only relevant variables
+CommutingZonesCensus2010 <- CommutingZonesCensus2010 %>% select(OUT10, STATE2KX, CNTY2KX)
+
+# Rename OUT10
+CommutingZonesCensus2010 <- CommutingZonesCensus2010 %>% rename(commuting_area = OUT10)
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(CommutingZonesCensus2010,
+            by = c("STATE2KX", "CNTY2KX")
+            )
+```
+
+COI 3.0
+```{r}
+# Import
+COI_3.0Census2010 <- read_excel('Neighborhood Data/Census 2010/COI3.0Census2010.xlsx')
+
+# Filter relevant years and summarize
+COI_3.0Census2010 <- COI_3.0Census2010 %>% 
+  filter(year == 2012) %>% 
+  select("geoid10",
+         "z_COI_nat",
+         "z_ED_nat",
+         "z_HE_nat",
+         "z_SE_nat",
+         "primary_ruca")
+
+# Rename
+COI_3.0Census2010 <- COI_3.0Census2010 %>% 
+  rename("zip_z_ed_nat" = "z_ED_nat",
+         "zip_z_he_nat" = "z_HE_nat",
+         "zip_z_se_nat" = "z_SE_nat")
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(COI_3.0Census2010,
+            by = c("geoid10")
+            ) 
+```
+
+COI 3.0 Subdomains
+```{r}
+# Import
+COI_3.0SubdomainsCensus2010 <- read_excel('Neighborhood Data/Census 2010/COI3.0SubdomainsCensus2010.xlsx')
+
+# Filter relevant years and summarize
+COI_3.0SubdomainsCensus2010 <- COI_3.0SubdomainsCensus2010 %>% 
+  filter(year == 2012) %>% 
+  select(geoid10,
+         z_ED_EL_nat,
+         z_ED_ER_nat,
+         z_ED_SP_nat,
+         z_HE_EP_nat,
+         z_HE_HR_nat,
+         z_HE_SE_nat,
+         z_HE_HE_nat,
+         z_SE_EI_nat,
+         z_SE_EO_nat,
+         z_SE_ER_nat,
+         z_SE_HQ_nat,
+         z_SE_SR_nat,
+         z_SE_WL_nat) %>% 
+  mutate(z_HE_EP_nat = as.numeric(z_HE_EP_nat)
+  )
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(COI_3.0SubdomainsCensus2010,
+            by = c("geoid10")
+            ) 
+
+```
+
+School Proficiency
+```{r}
+# AFFHT0001; 2012 data
+
+# Import
+SchoolProficiencyCensus2010 <- read_excel('Neighborhood Data/Census 2010/SchoolProficiencyBlockGroup2010.xlsx')
+
+# Merge block groups together
+SchoolProficiencyCensus2010 <- SchoolProficiencyCensus2010 %>% 
+  mutate(
+    geoid10  = substr(blockgroupid, 1, 11)
+  ) %>% 
+  group_by(geoid10) %>% 
+   summarise(
+     SCHL_IDX = mean(schl_idx, na.rm = T),
+     .groups = "drop"
+  ) %>% 
+  mutate(
+    SCHL_IDX = ifelse(is.nan(SCHL_IDX), NA_real_, SCHL_IDX)
+  )
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(SchoolProficiencyCensus2010,
+            by = c("geoid10")
+            ) 
+```
+
+R/ECAP
+```{r}
+# Import
+RECAPCensus2010 <- read_excel('Neighborhood Data/Census 2010/RECAPCensus2010.xlsx')
+
+# Rename
+RECAPCensus2010 <- RECAPCensus2010 %>% 
+  rename("RCAP_20" = "RCAP_10")
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(RECAPCensus2010,
+            by = c("geoid10")
+            )
+```
+
+American Community Survey
+```{r}
+# Import
+ACS2013Census2010 <- read_excel('Neighborhood Data/Census 2010/ACS2013Census2010.xlsx') %>% 
+  rename("geoid10" = "GEOID")
+
+# Calculate needed variables
+ACS2013Census2010 <- ACS2013Census2010 %>%
+  mutate(
+    # B17021EST2_PCT	Families with Income in the past 12 months below poverty level Poverty Rate
+    B17021EST2_PCT = B17021_002E / B17021_001E,
+    
+    # B17021_FAM_PCT	Poverty Rate In Family Households as a % 
+    B17021_FAM_PCT = B17010_002E / B17010_001E,
+    
+    # B19013est1	Median Household Income In The Past 12 Months
+    B19013est1 = B19013_001E,
+    
+    # B25014_CROWD_PCT	% Households with 1 or more occupants per room
+    total_crowded = B25014_005E + B25014_006E + B25014_007E +
+                    B25014_011E + B25014_012E + B25014_013E,
+    
+    B25014_CROWD_PCT = 100 * total_crowded / B25014_001E,
+
+    # B25014_SEVCROWD_O_PCT	Owner occupied: 1.51 or more occupants per room as a % 
+    owner_151_plus = B25014_006E + B25014_007E,
+    B25014_SEVCROWD_O_PCT = 100 * owner_151_plus / B25014_002E,
+
+    # B25014_SEVCROWD_R_PCT	Renter occupied: 1.51 or more occupants per room as a %
+    renter_151_plus = B25014_012E + B25014_013E,
+    B25014_SEVCROWD_R_PCT = 100 * renter_151_plus / B25014_008E,
+    
+     # B23001_UE_PCT	Overall Unemployment Rate
+    total_labor_force = rowSums(select(., 
+      B23001_006E, B23001_013E, B23001_020E, B23001_027E, B23001_034E, B23001_041E,
+      B23001_048E, B23001_055E, B23001_062E, B23001_069E, B23001_074E, B23001_079E, B23001_084E,
+      B23001_092E, B23001_099E, B23001_106E, B23001_113E, B23001_120E, B23001_127E,
+      B23001_134E, B23001_141E, B23001_148E, B23001_155E, B23001_160E, B23001_165E, B23001_170E
+    ), na.rm = TRUE),
+
+    total_unemployed = rowSums(select(., 
+      B23001_008E, B23001_015E, B23001_022E, B23001_029E, B23001_036E, B23001_043E,
+      B23001_050E, B23001_057E, B23001_064E, B23001_071E, B23001_076E, B23001_081E, B23001_086E,
+      B23001_094E, B23001_101E, B23001_108E, B23001_115E, B23001_122E, B23001_129E,
+      B23001_136E, B23001_143E, B23001_150E, B23001_157E, B23001_162E, B23001_167E, B23001_172E
+    ), na.rm = TRUE),
+
+    B23001_UE_PCT = 100 * total_unemployed / total_labor_force,
+
+    # B23001_UE_16to24_PCT	16-24  Unemployment Rate
+    lf_16_24 = rowSums(select(., 
+      B23001_006E, B23001_013E, B23001_020E,
+      B23001_092E, B23001_099E, B23001_106E
+    ), na.rm = TRUE),
+
+    unemp_16_24 = rowSums(select(., 
+      B23001_008E, B23001_015E, B23001_022E,
+      B23001_094E, B23001_101E, B23001_108E
+    ), na.rm = TRUE),
+
+    B23001_UE_16to24_PCT = 100 * unemp_16_24 / lf_16_24,
+
+    # B23001_UE_25to64_PCT	25 - 65 Unemployment Rate
+    lf_25_64 = rowSums(select(., 
+      B23001_027E, B23001_034E, B23001_041E, B23001_048E,
+      B23001_055E, B23001_062E, B23001_069E,
+      B23001_113E, B23001_120E, B23001_127E, B23001_134E,
+      B23001_141E, B23001_148E, B23001_155E
+    ), na.rm = TRUE),
+
+    unemp_25_64 = rowSums(select(., 
+      B23001_029E, B23001_036E, B23001_043E, B23001_050E,
+      B23001_057E, B23001_064E, B23001_071E,
+      B23001_115E, B23001_122E, B23001_129E, B23001_136E,
+      B23001_143E, B23001_150E, B23001_157E
+    ), na.rm = TRUE),
+
+    B23001_UE_25to64_PCT = 100 * unemp_25_64 / lf_25_64,
+    
+    # B25106_CB_PCT	Paying > 30% as a %
+    paying_30_plus = rowSums(select(., 
+      B25106_006E, B25106_010E, B25106_014E, B25106_018E, B25106_022E,
+      B25106_028E, B25106_032E, B25106_036E, B25106_040E, B25106_044E
+    ), na.rm = TRUE),
+
+    B25106_CB_PCT = 100 * paying_30_plus / B25106_001E
+    
+  ) %>% 
+  select(geoid10, 
+         B17021EST2_PCT, 
+         B17021_FAM_PCT, 
+         B19013est1, 
+         B23001_UE_PCT, 
+         B23001_UE_16to24_PCT, 
+         B23001_UE_25to64_PCT, 
+         B25014_CROWD_PCT, 
+         B25014_SEVCROWD_O_PCT, 
+         B25014_SEVCROWD_R_PCT, 
+         B25106_CB_PCT
+         )
+
+ACS2013Census2010 <- ACS2013Census2010 %>%
+  mutate(across(everything(), ~ ifelse(is.nan(.), NA_real_, .)))
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(ACS2013Census2010,
+            by = c("geoid10")
+            )
+```
+
+Opportunity Atlas Neighborhood Characteristics
+```{r}
+# Import
+OANeighborhoodCensus2010 <- read_excel('Neighborhood Data/Census 2010/OANeighborhoodCensus2010.xlsx')
+
+# Create geoid10 identifier
+OANeighborhoodCensus2010 <- OANeighborhoodCensus2010 %>% mutate(state = sprintf("%02d", state),
+    county = sprintf("%03d", county),
+    tract = sprintf("%06d", tract),
+    geoid10 = paste0(state,county,tract)
+    ) 
+
+# Variable Selection
+OANeighborhoodCensus2010 <- OANeighborhoodCensus2010 %>% select(
+  geoid10,
+  ann_avg_job_growth_2004_2013,
+  foreign_share2010,
+  frac_coll_plus2010,
+  gsmn_math_g3_2013,
+  job_density_2013,
+  #jobs_highpay_5mi_2015,
+  #jobs_total_5mi_2015,
+  ln_wage_growth_hs_grad,
+  mean_commutetime2000,
+  popdensity2010,
+  rent_twobed2015,
+  share_black2010,
+  singleparent_share2010,
+  traveltime15_2010
+) %>% rename("share_black2016" = "share_black2010",
+             "singleparent_share[2010]" = "singleparent_share2010")
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(OANeighborhoodCensus2010,
+            by = c("geoid10")
+            )
+```
+
+Opportunity Atlas Income and Incarceration
+```{r}
+# Import
+OAIncomeCensus2010 <- read_excel('Neighborhood Data/Census 2010/OAIncomeCensus2010.xlsx')
+
+# Create geoid10 identifier
+OAIncomeCensus2010 <- OAIncomeCensus2010 %>% mutate(state = sprintf("%02d", state),
+    county = sprintf("%03d", county),
+    tract = sprintf("%06d", tract),
+    geoid10 = paste0(state,county,tract)
+    )
+
+# Variable Selection
+OAIncomeCensus2010 <- OAIncomeCensus2010 %>% select(
+  geoid10,
+  kfr_pooled_pooled_p25,
+  kfr_white_pooled_p25,
+  kfr_black_pooled_p25,
+  kfr_hisp_pooled_p25,
+  jail_pooled_pooled_p25,
+  jail_black_pooled_p25,
+  jail_white_pooled_p25,
+  jail_hisp_pooled_p25
+) 
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(OAIncomeCensus2010,
+            by = c("geoid10")
+            )
+```
+
+BU RISE Gun Violence
+```{r}
+# Import
+BURISECensus2010 <- read_excel('Neighborhood Data/Census 2010/BURISEWGS84Coordinates.xlsx')
+
+# Convert BURISECensus2010 into sf object using X (lon) and Y (lat)
+points_sf <- st_as_sf(
+  BURISECensus2010,
+  coords = c("X", "Y"),
+  crs = 4326   # WGS84 (long/lat)
+)
+
+# Read all local tracts
+tract_files <- list.files("shapefiles/tracts_2010", pattern = "\\.gpkg$", full.names = TRUE)
+
+# Combine all state tract shapefiles
+all_tracts <- map_df(tract_files, st_read)
+
+# Spatial join: assign tract to each shooting point
+points_with_tract <- st_join(points_sf, all_tracts, join = st_within)
+
+# Summarize shootings by tract 
+points_with_tract <- points_with_tract %>% 
+  st_drop_geometry() %>% 
+  mutate(n_killed = ifelse(is.na(n_killed), 0, n_killed),
+         n_injured = ifelse(is.na(n_injured), 0, n_injured)
+         ) %>% 
+  group_by(GEOID10) %>% 
+  summarise(shootings = sum(n_killed + n_injured),
+            fatal_shootings = sum(n_killed)
+  ) %>% 
+  rename("geoid10" = "GEOID10")
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(points_with_tract,
+            by = "geoid10"
+            ) %>% 
+  mutate(shootings = ifelse(is.na(shootings), 0, shootings),
+         fatal_shootings = ifelse(is.na(fatal_shootings), 0, fatal_shootings))
+```
+
+COI 2.0 Subdomains
+```{r}
+# Import
+COI_2.0SubdomainsCensus2010 <- read_excel('Neighborhood Data/Census 2010/COI2.0Census2010.xlsx')
+
+# Filter for 2010 only
+COI_2.0SubdomainsCensus2010 <- COI_2.0SubdomainsCensus2010 %>% 
+  filter(year == 2010) %>% 
+  select(geoid,
+         zED_APENR,
+         zED_ATTAIN,
+         zED_COLLEGE,
+         zED_ECENROL,
+         zED_HSGRAD,
+         zED_MATH,
+         zED_READING,
+         zED_SCHPOV,
+         zED_TEACHXP,
+         zHE_FOOD,
+         zHE_GREEN,
+         zHE_HEAT,
+         zHE_HLTHINS,
+         zHE_OZONE,
+         zHE_PM25,
+         zHE_VACANCY,
+         zHE_WALK,
+         zHE_SUPRFND,
+         zHE_RSEI,
+         zSE_POVRATE,
+         zSE_PUBLIC,
+         zSE_HOME,
+         zSE_OCC,
+         zSE_MHE,
+         zSE_EMPRAT,
+         zSE_JOBPROX,
+         zSE_SINGLE,
+         zSE_ECRES
+         )
+
+# Rename
+COI_2.0SubdomainsCensus2010 <- COI_2.0SubdomainsCensus2010 %>% 
+  rename("geoid10" = geoid,
+         zip_zED_APENR = zED_APENR,	
+         zip_zED_ATTAIN = zED_ATTAIN,	
+         zip_zED_COLLEGE = zED_COLLEGE,	
+         zip_zED_ECENROL = zED_ECENROL,	
+         zip_zED_HSGRAD = zED_HSGRAD,	
+         zip_zED_MATH = zED_MATH,	
+         zip_zED_READING = zED_READING,	
+         zip_zED_SCHPOV = zED_SCHPOV,	
+         zip_zED_TEACHXP = zED_TEACHXP,	
+         zip_zHE_FOOD = zHE_FOOD,	
+         zip_zHE_GREEN = zHE_GREEN,	
+         zip_zHE_HEAT = zHE_HEAT,	
+         zip_zHE_HLTHINS = zHE_HLTHINS,	
+         zip_zHE_VACANCY = zHE_VACANCY,	
+         zip_zHE_WALK = zHE_WALK,	
+         zip_zHE_SUPRFND = zHE_SUPRFND,	
+         zip_zHE_RSEI = zHE_RSEI,	
+         zip_zSE_POVRATE = zSE_POVRATE,	
+         zip_zSE_PUBLIC = zSE_PUBLIC,	
+         zip_zSE_HOME = zSE_HOME,	
+         zip_zSE_OCC = zSE_OCC,	
+         zip_zSE_MHE = zSE_MHE,	
+         zip_zSE_EMPRAT = zSE_EMPRAT,	
+         zip_zSE_JOBPROX = zSE_JOBPROX,	
+         zip_zSE_SINGLE = zSE_SINGLE,	
+         zip_zSE_ECRES = zSE_ECRES
+         )
+
+# Join to GazetteerCensus2010
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(COI_2.0SubdomainsCensus2010,
+            by = c("geoid10")
+            )
+```
+
+ACS Child Population
+```{r}
+total_child_vars <- c(
+  "B01001_003E", "B01001_004E", "B01001_005E", "B01001_006E",  # Male <18
+  "B01001_027E", "B01001_028E", "B01001_029E", "B01001_030E"   # Female <18
+)
+
+# Black only child variables
+black_child_vars <- c(
+  "B01001B_003E", "B01001B_004E", "B01001B_005E", "B01001B_006E",  # Male <18
+  "B01001B_018E", "B01001B_019E", "B01001B_020E", "B01001B_021E"   # Female <18
+)
+
+# Hispanic child variables
+hispanic_child_vars <- c(
+  "B01001I_003E", "B01001I_004E", "B01001I_005E", "B01001I_006E",
+  "B01001I_018E", "B01001I_019E", "B01001I_020E", "B01001I_021E"
+)
+
+# White only child variables
+white_child_vars <- c(
+  "B01001A_003E", "B01001A_004E", "B01001A_005E", "B01001A_006E",
+  "B01001A_018E", "B01001A_019E", "B01001A_020E", "B01001A_021E"
+)
+
+ACSChildPopCensus2010 <- read_excel('Neighborhood Data/Census 2010/ACS2013ChildPopulationCensus2010.xlsx')
+
+ACSChildPopCensus2010 <- ACSChildPopCensus2010 %>% 
+  transmute(GEOID,
+            zip_pop = rowSums(across(all_of(total_child_vars)), na.rm = TRUE),
+            zip_black = rowSums(across(all_of(black_child_vars)), na.rm = TRUE),
+            zip_hisp = rowSums(across(all_of(hispanic_child_vars)), na.rm = TRUE),
+            zip_white = rowSums(across(all_of(white_child_vars)), na.rm = TRUE)
+            ) %>% rename("geoid10" = "GEOID")
+
+GazetteerCensus2010 <- GazetteerCensus2010 %>% 
+  left_join(ACSChildPopCensus2010,
+            by = "geoid10"
+  )
+```
+
+Quality Checks
+```{r}
+missing_report <- data.frame(
+  Variable = names(GazetteerCensus2010),
+  Missing_Count = sapply(GazetteerCensus2010, function(x) sum(is.na(x))),
+  Missing_Percent = sapply(GazetteerCensus2010, function(x) mean(is.na(x)) * 100)
+)
+
+# Only keep variables with missing data
+missing_report <- missing_report[missing_report$Missing_Count > 0, ]
+print(missing_report)
+```
+
+Export Data
+```{r}
+saveRDS(GazetteerCensus2010, "NeighborhoodDataCensus2010.rds")
+```
